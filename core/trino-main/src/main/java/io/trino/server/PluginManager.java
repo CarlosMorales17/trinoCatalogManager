@@ -19,6 +19,7 @@ import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.connector.CatalogFactory;
 import io.trino.connector.CatalogStoreManager;
+import io.trino.connector.CustomCatalogManager;
 import io.trino.eventlistener.EventListenerManager;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.execution.resourcegroups.ResourceGroupManager;
@@ -37,6 +38,7 @@ import io.trino.server.security.HeaderAuthenticatorManager;
 import io.trino.server.security.PasswordAuthenticatorManager;
 import io.trino.spi.Plugin;
 import io.trino.spi.block.BlockEncoding;
+import io.trino.spi.catalog.CatalogManagerFactory;
 import io.trino.spi.catalog.CatalogStoreFactory;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.ConnectorFactory;
@@ -83,6 +85,7 @@ public class PluginManager
 
     private final PluginsProvider pluginsProvider;
     private final Optional<CatalogStoreManager> catalogStoreManager;
+    private final Optional<CustomCatalogManager> catalogManager;
     private final CatalogFactory connectorFactory;
     private final GlobalFunctionCatalog globalFunctionCatalog;
     private final LanguageFunctionEngineManager languageFunctionEngineManager;
@@ -105,6 +108,7 @@ public class PluginManager
     public PluginManager(
             PluginsProvider pluginsProvider,
             Optional<CatalogStoreManager> catalogStoreManager,
+            Optional<CustomCatalogManager> catalogManager,
             CatalogFactory connectorFactory,
             GlobalFunctionCatalog globalFunctionCatalog,
             LanguageFunctionEngineManager languageFunctionEngineManager,
@@ -124,6 +128,7 @@ public class PluginManager
     {
         this.pluginsProvider = requireNonNull(pluginsProvider, "pluginsProvider is null");
         this.catalogStoreManager = requireNonNull(catalogStoreManager, "catalogStoreManager is null");
+        this.catalogManager = requireNonNull(catalogManager, "catalogManager is null");
         this.connectorFactory = requireNonNull(connectorFactory, "connectorFactory is null");
         this.globalFunctionCatalog = requireNonNull(globalFunctionCatalog, "globalFunctionCatalog is null");
         this.languageFunctionEngineManager = requireNonNull(languageFunctionEngineManager, "languageFunctionEngineManager is null");
@@ -198,6 +203,13 @@ public class PluginManager
             for (CatalogStoreFactory catalogStoreFactory : plugin.getCatalogStoreFactories()) {
                 log.info("Registering catalog store %s", catalogStoreFactory.getName());
                 catalogStoreManager.addCatalogStoreFactory(catalogStoreFactory);
+            }
+        });
+
+        catalogManager.ifPresent(catalogManager -> {
+            for (CatalogManagerFactory catalogManagerFactory : plugin.getCatalogManagerFactories()) {
+                log.info("Registering catalog manager %s", catalogManagerFactory.getName());
+                catalogManager.addCatalogManagerFactory(catalogManagerFactory);
             }
         });
 

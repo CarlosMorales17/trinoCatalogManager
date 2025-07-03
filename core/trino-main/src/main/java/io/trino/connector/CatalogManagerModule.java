@@ -29,11 +29,13 @@ public class CatalogManagerModule
         binder.bind(LazyCatalogFactory.class).in(Scopes.SINGLETON);
         binder.bind(CatalogFactory.class).to(LazyCatalogFactory.class).in(Scopes.SINGLETON);
         newOptionalBinder(binder, CatalogStoreManager.class);
+        newOptionalBinder(binder, CustomCatalogManager.class);
 
         CatalogManagerConfig config = buildConfigObject(CatalogManagerConfig.class);
         switch (config.getCatalogMangerKind()) {
             case STATIC -> install(new StaticCatalogManagerModule());
             case DYNAMIC -> install(new DynamicCatalogManagerModule());
+            case CUSTOM -> install(new CustomCatalogManagerModule());
         }
 
         install(new CatalogServiceProviderModule());

@@ -477,6 +477,7 @@ public class PlanTester
         this.pluginManager = new PluginManager(
                 (loader, createClassLoader) -> {},
                 Optional.empty(),
+                Optional.empty(),
                 catalogFactory,
                 globalFunctionCatalog,
                 new LanguageFunctionEngineManager(),

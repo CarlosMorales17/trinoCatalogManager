@@ -16,25 +16,20 @@ package io.trino.connector;
 import io.airlift.configuration.Config;
 import jakarta.validation.constraints.NotNull;
 
-public class CatalogManagerConfig
+public class CustomCatalogManagerConfig
 {
-    public enum CatalogMangerKind
-    {
-        STATIC, DYNAMIC, CUSTOM
-    }
-
-    private CatalogMangerKind catalogMangerKind = CatalogMangerKind.STATIC;
+    private String catalogManagerName;
 
     @NotNull
-    public CatalogMangerKind getCatalogMangerKind()
+    public String getCatalogManagerName()
     {
-        return catalogMangerKind;
+        return catalogManagerName;
     }
 
-    @Config("catalog.management")
-    public CatalogManagerConfig setCatalogMangerKind(CatalogMangerKind catalogMangerKind)
+    @Config("catalog.manager.name")
+    public CustomCatalogManagerConfig setCatalogManagerName(String catalogManagerName)
     {
-        this.catalogMangerKind = catalogMangerKind;
+        this.catalogManagerName = catalogManagerName;
         return this;
     }
 }
