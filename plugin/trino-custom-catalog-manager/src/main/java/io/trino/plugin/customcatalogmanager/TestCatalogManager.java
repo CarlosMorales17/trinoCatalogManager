@@ -91,6 +91,12 @@ public final class TestCatalogManager
     }
 
     @Override
+    public CatalogStore.StoredCatalog getStoredCatalog(CatalogName catalogName)
+    {
+        return catalogStore.getCatalog(catalogName);
+    }
+
+    @Override
     public void ensureCatalogsLoaded(List<CatalogProperties> catalogsList)
     {
         requireNonNull(catalogsList, "catalogs is null");
@@ -118,7 +124,7 @@ public final class TestCatalogManager
      * In a real plugin, this would be DatabaseCatalogStore, RestApiCatalogStore, etc.
      * that connects to your external system.
      */
-    private static class TestCatalogStore
+    private class TestCatalogStore
             implements CatalogStore
     {
         private static final Logger log = Logger.get(TestCatalogStore.class);
@@ -131,6 +137,15 @@ public final class TestCatalogManager
         {
             this.config = requireNonNull(config, "config is null");
             log.info("🏪 TestCatalogStore initialized with config: %s", config);
+        }
+
+        public StoredCatalog getCatalog(CatalogName catalogName)
+        {
+            CatalogProperties catalogProperties = storage.get(catalogName);
+            if (catalogProperties == null) {
+                throw new IllegalArgumentException("Catalog not found: " + catalogName);
+            }
+            return new TestStoredCatalog(catalogProperties);
         }
 
         @Override

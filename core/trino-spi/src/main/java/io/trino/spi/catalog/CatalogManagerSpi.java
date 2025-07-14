@@ -50,7 +50,6 @@ public interface CatalogManagerSpi
 
     /**
      * Returns the catalog store used by this catalog manager.
-     * This is the RECOMMENDED way to implement custom catalog management.
      * Provide a custom CatalogStore implementation that connects to your
      * external catalog source (database, REST API, etc.).
      *
@@ -69,6 +68,15 @@ public interface CatalogManagerSpi
      * This method is called during catalog manager shutdown.
      */
     void disconnect();
+
+    /**
+     * Get the catalog from the store
+     *
+     * @param catalogName the catalog name
+     *
+     * @return StoredCatalog of the catalog
+     */
+    CatalogStore.StoredCatalog getStoredCatalog(CatalogName catalogName);
 
     /**
      * This an Example Of how we can leave extensibilty for the user to extend thier logic

@@ -260,6 +260,16 @@ public class CustomCatalogManager
     @Override
     public Optional<Catalog> getCatalog(CatalogName catalogName)
     {
+        ensureCatalogManagerLoaded();
+        Catalog catalog = activeCatalogs.get(catalogName);
+        if (catalog != null) {
+            return Optional.of(catalog);
+        }
+
+        //Try to load from Catalog Store
+        CatalogStore.StoredCatalog storedCatalog = catalogManagerSpi.getStoredCatalog(catalogName);
+        addStoredCatalogToManagerState(storedCatalog);
+
         return Optional.ofNullable(activeCatalogs.get(catalogName));
     }
 
@@ -402,12 +412,19 @@ public class CustomCatalogManager
                 .filter(catalog -> !allCatalogs.containsKey(catalog.catalogHandle()))
                 .collect(toImmutableList());
 
-        // Should we Try To load the missing catalogs?
         if (!missingCatalogs.isEmpty()) {
+            //We Can try to load the missing catalogs from the catalog store
+            missingCatalogs.forEach(catalog -> {
+                CatalogStore.StoredCatalog storedCatalog = catalogManagerSpi.getStoredCatalog(catalog.catalogHandle().getCatalogName());
+                addStoredCatalogToManagerState(storedCatalog);
+            });
+            if (missingCatalogs.isEmpty()) {
+                return;
+            }
             throw new TrinoException(CATALOG_NOT_AVAILABLE, "Missing catalogs: " + missingCatalogs);
         }
 
-        // Delegate to SPI for any additional logic
+        // Example of how we can leave extensibilty for the user to extend thier logic, Delegate to SPI for any additional logic
         catalogManagerSpi.ensureCatalogsLoaded(catalogs);
     }
 
@@ -481,7 +498,7 @@ public class CustomCatalogManager
                 while (!Thread.currentThread().isInterrupted()) {
                     try {
                         Thread.sleep(refreshInterval);
-                        refreshCatalogs();
+                        triggerUpdateCatalogs();
                     }
                     catch (InterruptedException e) {
                         log.debug("Catalog refresh thread interrupted");
@@ -500,42 +517,61 @@ public class CustomCatalogManager
         }
     }
 
-    private void refreshCatalogs()
+    private void triggerUpdateCatalogs()
     {
-        Collection<CatalogStore.StoredCatalog> catalogs = catalogManagerSpi.getCatalogStore().getCatalogs();
         catalogsUpdateLock.lock();
         try {
             if (state == State.STOPPED) {
                 return;
             }
-            for (CatalogStore.StoredCatalog catalog : catalogs) {
-                CatalogProperties properties = catalog.loadProperties();
-                CatalogName catalogName = properties.catalogHandle().getCatalogName();
-                verify(catalogName.equals(catalog.name()), "Catalog name does not match catalog handle");
-
-                // Check if Catalog Already Exists within Active Catalogs
-                Catalog existingCatalog = activeCatalogs.get(catalogName);
-                if (existingCatalog != null) {
-                    // Check if the catalog version has changed
-                    if (existingCatalog.getCatalogHandle().getVersion().equals(properties.catalogHandle().getVersion())) {
-                        continue; // Same version, skip
-                    }
-                    // Version changed, need to update
-                    log.info("-- Updating catalog %s using connector %s from version %s to %s --",
-                            catalog.name(), properties.connectorName(),
-                            existingCatalog.getCatalogHandle().getVersion(), properties.catalogHandle().getVersion());
-                }
-
-                CatalogConnector newCatalog = catalogFactory.createCatalog(properties);
-                Catalog previousCatalog = activeCatalogs.put(catalog.name(), newCatalog.getCatalog());
-                if (previousCatalog == null) {
-                    log.info("-- Added catalog %s using connector %s --", catalog.name(), properties.connectorName());
-                }
-                allCatalogs.put(properties.catalogHandle(), newCatalog);
-            }
+            updateCatalogs();
         }
         finally {
             catalogsUpdateLock.unlock();
         }
+    }
+
+    private void updateCatalogs()
+    {
+        // Prune Old Catalogs
+        pruneCatalogs(ImmutableSet.of());
+
+        // Add New Catalogs From Catalog Store
+        Collection<CatalogStore.StoredCatalog> storeCatalogs = catalogManagerSpi.getCatalogStore().getCatalogs();
+        for (CatalogStore.StoredCatalog catalog : storeCatalogs) {
+            addStoredCatalogToManagerState(catalog);
+        }
+
+        // Deactive Catalogs not in Catalog Store
+        List<CatalogName> deactiveCatalogs = activeCatalogs.keySet().stream().filter(
+                catalogName -> !storeCatalogs.stream().map(CatalogStore.StoredCatalog::name).collect(toImmutableSet()).contains(catalogName)).toList();
+        deactiveCatalogs.forEach(activeCatalogs::remove);
+    }
+
+    private void addStoredCatalogToManagerState(CatalogStore.StoredCatalog storedCatalog)
+    {
+        CatalogProperties properties = storedCatalog.loadProperties();
+        CatalogName catalogName = properties.catalogHandle().getCatalogName();
+        verify(catalogName.equals(storedCatalog.name()), "Catalog name does not match catalog handle");
+
+        // Check if Catalog Already Exists within Active Catalogs
+        Catalog existingCatalog = activeCatalogs.get(catalogName);
+        if (existingCatalog != null) {
+            // Check if the catalog version has changed
+            if (existingCatalog.getCatalogHandle().getVersion().equals(properties.catalogHandle().getVersion())) {
+                return;
+            }
+            // Version changed, need to update
+            log.info("-- Updating catalog %s using connector %s from version %s to %s --",
+                    storedCatalog.name(), properties.connectorName(),
+                    existingCatalog.getCatalogHandle().getVersion(), properties.catalogHandle().getVersion());
+        }
+
+        CatalogConnector newCatalog = catalogFactory.createCatalog(properties);
+        Catalog previousCatalog = activeCatalogs.put(storedCatalog.name(), newCatalog.getCatalog());
+        if (previousCatalog == null) {
+            log.info("-- Added catalog %s using connector %s --", storedCatalog.name(), properties.connectorName());
+        }
+        allCatalogs.put(properties.catalogHandle(), newCatalog);
     }
 }
