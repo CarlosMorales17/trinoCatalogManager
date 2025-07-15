@@ -59,16 +59,16 @@ public final class MySQLCatalogManagerPlugin
         log.info("MySQLCatalogManagerPlugin initializing with config: %s", config);
 
         // Configuration
-        String jdbcUrl = config.getOrDefault("mysql.jdbc-url", "jdbc:mysql://localhost:3306/trino_catalogs");
+        String jdbcUrl = config.getOrDefault("mysql.jdbc-url", "jdbc:mysql://localhost:3306/catalogs");
         String username = config.getOrDefault("mysql.username", "trino");
-        String password = config.getOrDefault("mysql.password", "");
+        String dbAuth = config.getOrDefault("mysql.password", "");
         this.refreshInterval = Long.parseLong(config.getOrDefault("mysql.refresh-interval", "30000"));
 
         // Create HikariCP data source
         HikariConfig hikariConfig = new HikariConfig();
         hikariConfig.setJdbcUrl(jdbcUrl);
         hikariConfig.setUsername(username);
-        hikariConfig.setPassword(password);
+        hikariConfig.setPassword(dbAuth);
         hikariConfig.setMaximumPoolSize(10);
         hikariConfig.setMinimumIdle(2);
         hikariConfig.setConnectionTimeout(30000);
@@ -374,8 +374,6 @@ public final class MySQLCatalogManagerPlugin
         @Override
         public Collection<StoredCatalog> getCatalogs()
         {
-            log.info("Loading all catalogs from MySQL database");
-
             String sql = "SELECT catalog_name, version_identifier, catalog_config, connector_name FROM catalog_configurations";
             List<StoredCatalog> catalogs = new ArrayList<>();
 
