@@ -268,8 +268,14 @@ public class CustomCatalogManager
         }
 
         //Try to load from Catalog Store
+        log.debug("Attempting to load catalog '{}' from catalog store", catalogName);
         CatalogStore.StoredCatalog storedCatalog = catalogManagerSpi.getStoredCatalog(catalogName);
-        addStoredCatalogToManagerState(storedCatalog);
+        if (storedCatalog != null) {
+            addStoredCatalogToManagerState(storedCatalog);
+        }
+        else {
+            log.debug("Catalog '{}' not found in catalog store", catalogName);
+        }
 
         return Optional.ofNullable(activeCatalogs.get(catalogName));
     }
@@ -420,12 +426,19 @@ public class CustomCatalogManager
             //We Can try to load the missing catalogs from the catalog store
             missingCatalogs.forEach(catalog -> {
                 CatalogStore.StoredCatalog storedCatalog = catalogManagerSpi.getStoredCatalog(catalog.catalogHandle().getCatalogName());
-                addStoredCatalogToManagerState(storedCatalog);
+                if (storedCatalog != null) {
+                    addStoredCatalogToManagerState(storedCatalog);
+                }
             });
-            if (missingCatalogs.isEmpty()) {
-                return;
+
+            // Re-check missing catalogs after attempting to load from store
+            List<CatalogProperties> stillMissingCatalogs = catalogs.stream()
+                    .filter(catalog -> !allCatalogs.containsKey(catalog.catalogHandle()))
+                    .collect(toImmutableList());
+
+            if (!stillMissingCatalogs.isEmpty()) {
+                throw new TrinoException(CATALOG_NOT_AVAILABLE, "Missing catalogs: " + stillMissingCatalogs);
             }
-            throw new TrinoException(CATALOG_NOT_AVAILABLE, "Missing catalogs: " + missingCatalogs);
         }
 
         // Example of how we can leave extensibilty for the user to extend thier logic, Delegate to SPI for any additional logic
@@ -572,28 +585,39 @@ public class CustomCatalogManager
 
     private void addStoredCatalogToManagerState(CatalogStore.StoredCatalog storedCatalog)
     {
-        CatalogProperties properties = storedCatalog.loadProperties();
-        CatalogName catalogName = properties.catalogHandle().getCatalogName();
-        verify(catalogName.equals(storedCatalog.name()), "Catalog name does not match catalog handle");
+        if (storedCatalog == null) {
+            log.debug("Stored catalog is null, skipping");
+            return;
+        }
 
-        // Check if Catalog Already Exists within Active Catalogs
-        Catalog existingCatalog = activeCatalogs.get(catalogName);
-        if (existingCatalog != null) {
-            // Check if the catalog version has changed
-            if (existingCatalog.getCatalogHandle().getVersion().equals(properties.catalogHandle().getVersion())) {
-                return;
+        try {
+            CatalogProperties properties = storedCatalog.loadProperties();
+            CatalogName catalogName = properties.catalogHandle().getCatalogName();
+            verify(catalogName.equals(storedCatalog.name()), "Catalog name does not match catalog handle");
+
+            // Check if Catalog Already Exists within Active Catalogs
+            Catalog existingCatalog = activeCatalogs.get(catalogName);
+            if (existingCatalog != null) {
+                // Check if the catalog version has changed
+                if (existingCatalog.getCatalogHandle().getVersion().equals(properties.catalogHandle().getVersion())) {
+                    return;
+                }
+                // Version changed, need to update
+                log.info("-- Updating catalog %s using connector %s from version %s to %s --",
+                        storedCatalog.name(), properties.connectorName(),
+                        existingCatalog.getCatalogHandle().getVersion(), properties.catalogHandle().getVersion());
             }
-            // Version changed, need to update
-            log.info("-- Updating catalog %s using connector %s from version %s to %s --",
-                    storedCatalog.name(), properties.connectorName(),
-                    existingCatalog.getCatalogHandle().getVersion(), properties.catalogHandle().getVersion());
-        }
 
-        CatalogConnector newCatalog = catalogFactory.createCatalog(properties);
-        Catalog previousCatalog = activeCatalogs.put(storedCatalog.name(), newCatalog.getCatalog());
-        if (previousCatalog == null) {
-            log.info("-- Added catalog %s using connector %s --", storedCatalog.name(), properties.connectorName());
+            CatalogConnector newCatalog = catalogFactory.createCatalog(properties);
+            Catalog previousCatalog = activeCatalogs.put(storedCatalog.name(), newCatalog.getCatalog());
+            if (previousCatalog == null) {
+                log.info("-- Added catalog %s using connector %s --", storedCatalog.name(), properties.connectorName());
+            }
+            allCatalogs.put(properties.catalogHandle(), newCatalog);
         }
-        allCatalogs.put(properties.catalogHandle(), newCatalog);
+        catch (Exception e) {
+            log.error(e, "Failed to add stored catalog %s to manager state", storedCatalog.name());
+            // Don't rethrow - we want to continue processing other catalogs
+        }
     }
 }
