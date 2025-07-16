@@ -486,7 +486,11 @@ public final class MySQLCatalogManagerPlugin
                     catalogName,
                     new CatalogHandle.CatalogVersion(versionIdentifier));
 
-                return new CatalogProperties(catalogHandle, connectorName, properties);
+                // Filter out connector.name property - it's metadata for Trino, not a connector configuration
+                Map<String, String> filteredProperties = new HashMap<>(properties);
+                filteredProperties.remove("connector.name");
+
+                return new CatalogProperties(catalogHandle, connectorName, ImmutableMap.copyOf(filteredProperties));
             }
         }
     }

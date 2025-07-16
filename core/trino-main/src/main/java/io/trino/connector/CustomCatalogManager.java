@@ -70,6 +70,7 @@ import static io.trino.spi.StandardErrorCode.CATALOG_NOT_FOUND;
 import static io.trino.spi.connector.CatalogHandle.createRootCatalogHandle;
 import static io.trino.util.Executors.executeUntilFailure;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toSet;
 
 @ThreadSafe
 public class CustomCatalogManager
@@ -394,6 +395,9 @@ public class CustomCatalogManager
 
             log.info("Loaded initial catalogs successfully");
 
+            log.info("Initial Active Catalogs: %s", activeCatalogs);
+            log.info("Initial All Catalogs: %s", allCatalogs);
+
             // Start the catalog synchronization thread
             synchronizeCatalogsWithCatalogStore();
         }
@@ -533,19 +537,37 @@ public class CustomCatalogManager
 
     private void updateCatalogs()
     {
+        //Get System Catalog (this will never be pruned)
+        CatalogName systemCatalogName = new CatalogName(GlobalSystemConnector.NAME);
+        Catalog systemCatalog = activeCatalogs.get(systemCatalogName);
+        Set<CatalogHandle> catalogsInUse = this.activeCatalogs.values().stream().map(Catalog::getCatalogHandle).collect(toSet());
+        catalogsInUse.add(systemCatalog.getCatalogHandle());
+
+        log.debug("Catalogs in use: %s", catalogsInUse);
+
         // Prune Old Catalogs
-        pruneCatalogs(ImmutableSet.of());
+        pruneCatalogs(catalogsInUse);
 
         // Add New Catalogs From Catalog Store
         Collection<CatalogStore.StoredCatalog> storeCatalogs = catalogManagerSpi.getCatalogStore().getCatalogs();
+
         for (CatalogStore.StoredCatalog catalog : storeCatalogs) {
             addStoredCatalogToManagerState(catalog);
         }
 
-        // Deactive Catalogs not in Catalog Store
+        // Deactivate Catalogs not in Catalog Store (excluding system catalog)
+        Set<CatalogName> storeCatalogNames = storeCatalogs.stream().map(CatalogStore.StoredCatalog::name).collect(toImmutableSet());
         List<CatalogName> deactiveCatalogs = activeCatalogs.keySet().stream().filter(
-                catalogName -> !storeCatalogs.stream().map(CatalogStore.StoredCatalog::name).collect(toImmutableSet()).contains(catalogName)).toList();
-        deactiveCatalogs.forEach(activeCatalogs::remove);
+                catalogName -> !catalogName.equals(systemCatalogName) &&
+                        !storeCatalogNames.contains(catalogName)).toList();
+
+        // Remove from activeCatalogs only - keep in allCatalogs for existing connections
+        for (CatalogName catalogName : deactiveCatalogs) {
+            Catalog removedCatalog = activeCatalogs.remove(catalogName);
+            if (removedCatalog != null) {
+                log.info("Deactivated catalog from activeCatalogs: %s (keeping in allCatalogs for existing connections)", catalogName);
+            }
+        }
     }
 
     private void addStoredCatalogToManagerState(CatalogStore.StoredCatalog storedCatalog)
