@@ -530,7 +530,7 @@ public class CustomCatalogManager
             refreshThread.setName("Catalog Refresh Thread");
             refreshThread.setDaemon(true);
             refreshThread.start();
-            log.info("Started catalog refresh thread with interval: {}ms", refreshInterval);
+            log.info("Started catalog refresh thread with interval: %s ms", refreshInterval);
         }
     }
 
@@ -556,7 +556,8 @@ public class CustomCatalogManager
         Set<CatalogHandle> catalogsInUse = this.activeCatalogs.values().stream().map(Catalog::getCatalogHandle).collect(toSet());
         catalogsInUse.add(systemCatalog.getCatalogHandle());
 
-        log.debug("Catalogs in use: %s", catalogsInUse);
+        log.info("Active Catalogs in use: %s", catalogsInUse);
+        log.info("All Catalogs: %s", allCatalogs);
 
         // Prune Old Catalogs
         pruneCatalogs(catalogsInUse);
