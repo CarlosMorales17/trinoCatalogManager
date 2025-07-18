@@ -15,18 +15,14 @@ package io.trino.connector;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.errorprone.annotations.ThreadSafe;
-import com.google.errorprone.annotations.concurrent.GuardedBy;
 import com.google.inject.Inject;
 import io.airlift.configuration.secrets.SecretsResolver;
 import io.airlift.log.Logger;
 import io.trino.Session;
 import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.metadata.Catalog;
-import io.trino.metadata.CatalogManager;
 import io.trino.server.ForStartup;
-import io.trino.spi.TrinoException;
 import io.trino.spi.catalog.CatalogManagerFactory;
 import io.trino.spi.catalog.CatalogManagerSpi;
 import io.trino.spi.catalog.CatalogName;
@@ -34,125 +30,80 @@ import io.trino.spi.catalog.CatalogProperties;
 import io.trino.spi.catalog.CatalogStore;
 import io.trino.spi.classloader.ThreadContextClassLoader;
 import io.trino.spi.connector.CatalogHandle;
-import io.trino.spi.connector.CatalogHandle.CatalogVersion;
 import io.trino.spi.connector.ConnectorName;
 import jakarta.annotation.PreDestroy;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Map.Entry;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.Callable;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static io.airlift.configuration.ConfigurationLoader.loadPropertiesFrom;
-import static io.trino.metadata.Catalog.failedCatalog;
-import static io.trino.spi.StandardErrorCode.CATALOG_NOT_AVAILABLE;
-import static io.trino.spi.StandardErrorCode.CATALOG_NOT_FOUND;
-import static io.trino.spi.connector.CatalogHandle.createRootCatalogHandle;
-import static io.trino.util.Executors.executeUntilFailure;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toSet;
 
 @ThreadSafe
 public class CustomCatalogManager
-        implements CatalogManager, ConnectorServicesProvider
+        extends DynamicCatalogManagerBase
 {
     private static final Logger log = Logger.get(CustomCatalogManager.class);
     private static final File CATALOG_MANAGER_CONFIGURATION = new File("etc/catalog-manager.properties");
-
-    private enum State { CREATED, INITIALIZED, STOPPED }
 
     private final Map<String, CatalogManagerFactory> catalogManagerFactories = new ConcurrentHashMap<>();
     private final AtomicReference<Optional<CatalogManagerSpi>> configuredCatalogManager = new AtomicReference<>(Optional.empty());
     private final SecretsResolver secretsResolver;
     private final String catalogManagerKind;
-    private final CatalogFactory catalogFactory;
+
     private volatile CatalogManagerSpi catalogManagerSpi;
-    private final Executor executor;
     private volatile Thread refreshThread;
-
-    // Catalog management state similar to CoordinatorDynamicCatalogManager
-    private final Lock catalogsUpdateLock = new ReentrantLock();
-
-    /**
-     * Active catalogs that have been created and not dropped.
-     */
-    private final ConcurrentMap<CatalogName, Catalog> activeCatalogs = new ConcurrentHashMap<>();
-
-    /**
-     * All catalogs including those that have been dropped. Should this always be updated from the external DC SPI?
-     */
-    private final ConcurrentMap<CatalogHandle, CatalogConnector> allCatalogs = new ConcurrentHashMap<>();
-
-    @GuardedBy("catalogsUpdateLock")
-    private State state = State.CREATED;
 
     @Inject
     public CustomCatalogManager(SecretsResolver secretsResolver, CustomCatalogManagerConfig catalogManagerConfig,
                                 CatalogFactory catalogFactory, @ForStartup Executor executor)
     {
+        super(catalogFactory, executor);
         this.secretsResolver = requireNonNull(secretsResolver, "secretsResolver is null");
         this.catalogManagerKind = requireNonNull(catalogManagerConfig.getCatalogManagerName(), "catalogManagerKind is null");
-        this.catalogFactory = requireNonNull(catalogFactory, "catalogFactory is null");
-        this.executor = requireNonNull(executor, "executor is null");
+
+
+        super.setLogger(log);
+    }
+
+    private void ensureCatalogManagerLoaded()
+    {
+        if (catalogManagerSpi == null) {
+            synchronized (this) {
+                if (catalogManagerSpi == null) {
+                    loadConfiguredCatalogManager(catalogManagerKind);
+                    catalogManagerSpi.connect();
+                    super.setCatalogStore(catalogManagerSpi.getCatalogStore());
+                }
+            }
+        }
     }
 
     @PreDestroy
     public void stop()
     {
-        List<CatalogConnector> catalogs;
+        super.stop();
 
-        catalogsUpdateLock.lock();
-        try {
-            if (state == State.STOPPED) {
-                return;
-            }
-            state = State.STOPPED;
-
-            catalogs = new ArrayList<>(allCatalogs.values());
-            allCatalogs.clear();
-            activeCatalogs.clear();
-
-            // Stop the refresh thread
-            if (refreshThread != null) {
-                refreshThread.interrupt();
-                refreshThread = null;
-            }
-
-            // Clear the Connection
-            catalogManagerSpi.disconnect();
+        if (refreshThread != null) {
+            refreshThread.interrupt();
+            refreshThread = null;
         }
-        finally {
-            catalogsUpdateLock.unlock();
-        }
-
-        for (CatalogConnector connector : catalogs) {
-            try {
-                connector.shutdown();
-            }
-            catch (Throwable e) {
-                log.error(e, "Error shutting down catalog: %s", connector.getCatalogHandle());
-            }
-        }
+        catalogManagerSpi.disconnect();
     }
 
     public void addCatalogManagerFactory(CatalogManagerFactory catalogManagerFactory)
@@ -165,18 +116,18 @@ public class CustomCatalogManager
     }
 
     @VisibleForTesting
-    void loadConfiguredCatalogManager(String catalogManagerName, File catalogManagerFile)
+    void loadConfiguredCatalogManager(String catalogManagerName)
     {
         if (configuredCatalogManager.get().isPresent()) {
             return;
         }
         Map<String, String> properties = new HashMap<>();
-        if (catalogManagerFile.exists()) {
+        if (CATALOG_MANAGER_CONFIGURATION.exists()) {
             try {
-                properties = new HashMap<>(loadPropertiesFrom(catalogManagerFile.getPath()));
+                properties = new HashMap<>(loadPropertiesFrom(CATALOG_MANAGER_CONFIGURATION.getPath()));
             }
             catch (IOException e) {
-                throw new UncheckedIOException("Failed to read configuration file: " + catalogManagerFile, e);
+                throw new UncheckedIOException("Failed to read configuration file: " + CATALOG_MANAGER_CONFIGURATION, e);
             }
         }
         setConfiguredCatalogManager(catalogManagerName, properties);
@@ -201,70 +152,16 @@ public class CustomCatalogManager
         checkState(configuredCatalogManager.compareAndSet(Optional.empty(), Optional.of(catalogManagerSpi)),
                 "catalogManager is already set");
         this.catalogManagerSpi = catalogManagerSpi;
-
-        // Initialize the Connection Lazily
-        catalogManagerSpi.connect();
         log.info("Plugin catalog manager configured successfully");
-    }
-
-    @VisibleForTesting
-    public CatalogManagerSpi getCatalogManager()
-    {
-        return configuredCatalogManager.get().orElseThrow(() -> new IllegalStateException("Catalog manager is not configured"));
-    }
-
-    public void registerGlobalSystemConnector(GlobalSystemConnector connector)
-    {
-        requireNonNull(connector, "connector is null");
-
-        catalogsUpdateLock.lock();
-        try {
-            if (state == State.STOPPED) {
-                return;
-            }
-
-            CatalogConnector catalog = catalogFactory.createCatalog(
-                    GlobalSystemConnector.CATALOG_HANDLE,
-                    new ConnectorName(GlobalSystemConnector.NAME),
-                    connector);
-
-            if (activeCatalogs.putIfAbsent(new CatalogName(GlobalSystemConnector.NAME), catalog.getCatalog()) != null) {
-                throw new IllegalStateException("Global system catalog already registered");
-            }
-            allCatalogs.put(GlobalSystemConnector.CATALOG_HANDLE, catalog);
-            log.info("Registered system catalog");
-        }
-        finally {
-            catalogsUpdateLock.unlock();
-        }
-    }
-
-    private void ensureCatalogManagerLoaded()
-    {
-        if (catalogManagerSpi == null) {
-            synchronized (this) {
-                if (catalogManagerSpi == null) {
-                    loadConfiguredCatalogManager(catalogManagerKind, CATALOG_MANAGER_CONFIGURATION);
-                }
-            }
-        }
-    }
-
-    // CatalogManager interface methods
-    @Override
-    public Set<CatalogName> getCatalogNames()
-    {
-        ensureCatalogManagerLoaded();
-        return ImmutableSet.copyOf(activeCatalogs.keySet());
     }
 
     @Override
     public Optional<Catalog> getCatalog(CatalogName catalogName)
     {
         ensureCatalogManagerLoaded();
-        Catalog catalog = activeCatalogs.get(catalogName);
-        if (catalog != null) {
-            return Optional.of(catalog);
+        Optional<Catalog> catalog = super.getCatalog(catalogName);
+        if (catalog.isPresent()) {
+            return catalog;
         }
 
         // Fall back to allCatalogs
@@ -277,12 +174,12 @@ public class CustomCatalogManager
             CatalogConnector catalogConnector;
             if (matchingCatalogs.size() == 1) {
                 // Single version - use it directly
-                catalogConnector = matchingCatalogs.get(0).getValue();
+                catalogConnector = matchingCatalogs.getFirst().getValue();
                 log.debug("Found single version of catalog %s' in allCatalogs", catalogName);
             }
             else {
-                // Multiple versions - for now, pick the first one
-                catalogConnector = matchingCatalogs.get(0).getValue();
+                // Multiple versions - for now, pick first one
+                catalogConnector = matchingCatalogs.getFirst().getValue();
                 log.debug("Found %s versions of catalog %s in allCatalogs, using first available version",
                          matchingCatalogs.size(), catalogName);
             }
@@ -303,151 +200,36 @@ public class CustomCatalogManager
     }
 
     @Override
-    public Optional<CatalogProperties> getCatalogProperties(CatalogHandle catalogHandle)
-    {
-        ensureCatalogManagerLoaded();
-        return Optional.ofNullable(allCatalogs.get(catalogHandle.getRootCatalogHandle()))
-                .flatMap(CatalogConnector::getCatalogProperties);
-    }
-
-    @Override
-    public Set<CatalogHandle> getActiveCatalogs()
-    {
-        return activeCatalogs.values().stream()
-                .map(Catalog::getCatalogHandle)
-                .collect(toImmutableSet());
-    }
-
-    @Override
     public void createCatalog(CatalogName catalogName, ConnectorName connectorName, Map<String, String> properties, boolean notExists)
     {
-        requireNonNull(catalogName, "catalogName is null");
-        requireNonNull(connectorName, "connectorName is null");
-        requireNonNull(properties, "properties is null");
-
         ensureCatalogManagerLoaded();
-
-        catalogsUpdateLock.lock();
-        try {
-            checkState(state != State.STOPPED, "CatalogManager is stopped");
-
-            if (activeCatalogs.containsKey(catalogName)) {
-                if (notExists) {
-                    return;
-                }
-                throw new TrinoException(io.trino.spi.StandardErrorCode.ALREADY_EXISTS, "Catalog '%s' already exists".formatted(catalogName));
-            }
-
-            CatalogProperties catalogProperties = catalogManagerSpi.getCatalogStore()
-                    .createCatalogProperties(catalogName, connectorName, properties);
-
-            // get or create catalog for the handle
-            CatalogConnector catalog = allCatalogs.computeIfAbsent(
-                    catalogProperties.catalogHandle(),
-                    handle -> catalogFactory.createCatalog(catalogProperties));
-
-            // Delegate to the Catalog Store
-            catalogManagerSpi.getCatalogStore().addOrReplaceCatalog(catalogProperties);
-            activeCatalogs.put(catalogName, catalog.getCatalog());
-
-            log.debug("Added catalog: %s", catalog.getCatalogHandle());
-        }
-        finally {
-            catalogsUpdateLock.unlock();
-        }
+        super.createCatalog(catalogName, connectorName, properties, notExists);
     }
 
     @Override
     public void dropCatalog(CatalogName catalogName, boolean exists)
     {
         ensureCatalogManagerLoaded();
-        requireNonNull(catalogName, "catalogName is null");
-
-        boolean removed;
-        catalogsUpdateLock.lock();
-        try {
-            checkState(state != State.STOPPED, "CatalogManager is stopped");
-
-            // Remove from SPI
-            catalogManagerSpi.getCatalogStore().removeCatalog(catalogName);
-
-            // Don't Remove from active catalogs, refresh should take care of this
-            //removed = activeCatalogs.remove(catalogName) != null;
-
-            // Validate Existence
-            if (activeCatalogs.containsKey(catalogName)) {
-                removed = true;
-            }
-            else {
-                removed = false;
-            }
-        }
-        finally {
-            catalogsUpdateLock.unlock();
-        }
-
-        if (!removed && !exists) {
-            throw new TrinoException(CATALOG_NOT_FOUND, "Catalog '%s' not found".formatted(catalogName));
-        }
-
-        log.info("Dropped catalog: %s", catalogName);
+        super.dropCatalog(catalogName, exists);
     }
 
-    // ConnectorServicesProvider interface methods
     @Override
     public void loadInitialCatalogs()
     {
-        catalogsUpdateLock.lock();
-        try {
-            if (state == State.INITIALIZED) {
-                return;
-            }
-            checkState(state != State.STOPPED, "CatalogManager is stopped");
-            state = State.INITIALIZED;
+        ensureCatalogManagerLoaded();
+        super.loadInitialCatalogs();
+        log.info("Initial Active Catalogs: %s", activeCatalogs);
+        log.info("Initial All Catalogs: %s", allCatalogs);
 
-            ensureCatalogManagerLoaded();
-            executeUntilFailure(
-                    executor,
-                    catalogManagerSpi.getCatalogStore().getCatalogs().stream()
-                            .map(storedCatalog -> (Callable<?>) () -> {
-                                CatalogProperties catalog = null;
-                                try {
-                                    catalog = storedCatalog.loadProperties();
-                                    verify(catalog.catalogHandle().getCatalogName().equals(storedCatalog.name()), "Catalog name does not match catalog handle");
-                                    CatalogConnector newCatalog = catalogFactory.createCatalog(catalog);
-                                    activeCatalogs.put(storedCatalog.name(), newCatalog.getCatalog());
-                                    allCatalogs.put(catalog.catalogHandle(), newCatalog);
-                                    log.debug("-- Added catalog %s using connector %s --", storedCatalog.name(), catalog.connectorName());
-                                }
-                                catch (Throwable e) {
-                                    CatalogHandle catalogHandle = catalog != null ? catalog.catalogHandle() : createRootCatalogHandle(storedCatalog.name(), new CatalogVersion("failed"));
-                                    ConnectorName connectorName = catalog != null ? catalog.connectorName() : new ConnectorName("unknown");
-                                    activeCatalogs.put(storedCatalog.name(), failedCatalog(storedCatalog.name(), catalogHandle, connectorName));
-                                    log.error(e, "-- Failed to load catalog %s using connector %s --", storedCatalog.name(), connectorName);
-                                }
-                                return null;
-                            })
-                            .collect(toImmutableList()));
-
-            log.info("Loaded initial catalogs successfully");
-
-            log.info("Initial Active Catalogs: %s", activeCatalogs);
-            log.info("Initial All Catalogs: %s", allCatalogs);
-
-            // Start the catalog synchronization thread
-            synchronizeCatalogsWithCatalogStore();
-        }
-        finally {
-            catalogsUpdateLock.unlock();
-        }
+        // Start the catalog synchronization thread
+        synchronizeCatalogsWithCatalogStore();
     }
 
     @Override
-    public void ensureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
+    public void doEnsureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
     {
         ensureCatalogManagerLoaded();
 
-        // Check for missing catalogs
         List<CatalogProperties> missingCatalogs = catalogs.stream()
                 .filter(catalog -> !allCatalogs.containsKey(catalog.catalogHandle()))
                 .collect(toImmutableList());
@@ -460,15 +242,6 @@ public class CustomCatalogManager
                     addStoredCatalogToManagerState(storedCatalog);
                 }
             });
-
-            // Re-check missing catalogs after attempting to load from store
-            List<CatalogProperties> stillMissingCatalogs = catalogs.stream()
-                    .filter(catalog -> !allCatalogs.containsKey(catalog.catalogHandle()))
-                    .collect(toImmutableList());
-
-            if (!stillMissingCatalogs.isEmpty()) {
-                throw new TrinoException(CATALOG_NOT_AVAILABLE, "Missing catalogs: " + stillMissingCatalogs);
-            }
         }
 
         // Example of how we can leave extensibilty for the user to extend thier logic, Delegate to SPI for any additional logic
@@ -476,76 +249,30 @@ public class CustomCatalogManager
     }
 
     @Override
-    public void pruneCatalogs(Set<CatalogHandle> catalogsInUse)
+    public boolean doHardDropCatalog()
     {
-        ensureCatalogManagerLoaded();
-
-        List<CatalogConnector> removedCatalogs = new ArrayList<>();
-        catalogsUpdateLock.lock();
-        try {
-            if (state == State.STOPPED) {
-                return;
-            }
-
-            Iterator<Entry<CatalogHandle, CatalogConnector>> iterator = allCatalogs.entrySet().iterator();
-            while (iterator.hasNext()) {
-                Entry<CatalogHandle, CatalogConnector> entry = iterator.next();
-                CatalogHandle catalogHandle = entry.getKey();
-
-                // Check if catalog is still active
-                Catalog activeCatalog = activeCatalogs.get(catalogHandle.getCatalogName());
-                if (activeCatalog != null && activeCatalog.getCatalogHandle().equals(catalogHandle)) {
-                    // catalog is registered with a name, and therefore is available for new queries
-                    continue;
-                }
-
-                // Remove if not in use
-                if (!catalogsInUse.contains(catalogHandle)) {
-                    iterator.remove();
-                    removedCatalogs.add(entry.getValue());
-                }
-            }
-        }
-        finally {
-            catalogsUpdateLock.unlock();
-        }
-
-        // Shutdown removed catalogs
-        for (CatalogConnector removedCatalog : removedCatalogs) {
-            try {
-                removedCatalog.shutdown();
-            }
-            catch (Throwable e) {
-                log.error(e, "Error shutting down catalog: %s", removedCatalog.getCatalogHandle());
-            }
-        }
-
-        if (!removedCatalogs.isEmpty()) {
-            List<String> sortedHandles = removedCatalogs.stream()
-                    .map(connector -> connector.getCatalogHandle().toString())
-                    .sorted()
-                    .toList();
-            log.debug("Pruned catalogs: %s", sortedHandles);
-        }
-    }
-
-    @Override
-    public ConnectorServices getConnectorServices(CatalogHandle catalogHandle)
-    {
-        CatalogConnector catalogConnector = allCatalogs.get(catalogHandle.getRootCatalogHandle());
-        checkArgument(catalogConnector != null, "No catalog '%s'", catalogHandle.getCatalogName());
-        return catalogConnector.getMaterializedConnector(catalogHandle.getType());
+        return false;
     }
 
     private void synchronizeCatalogsWithCatalogStore()
     {
+        ensureCatalogManagerLoaded();
         long refreshInterval = catalogManagerSpi.getRefreshInterval();
         if (refreshInterval != 0 && refreshThread == null) {
             refreshThread = new Thread(() -> {
                 while (!Thread.currentThread().isInterrupted()) {
                     try {
                         Thread.sleep(refreshInterval);
-                        triggerUpdateCatalogs();
+                        catalogsUpdateLock.lock();
+                        try {
+                            if (state == State.STOPPED) {
+                                return;
+                            }
+                            updateCatalogs();
+                        }
+                        finally {
+                            catalogsUpdateLock.unlock();
+                        }
                     }
                     catch (InterruptedException e) {
                         log.debug("Catalog refresh thread interrupted");
@@ -564,20 +291,6 @@ public class CustomCatalogManager
         }
     }
 
-    private void triggerUpdateCatalogs()
-    {
-        catalogsUpdateLock.lock();
-        try {
-            if (state == State.STOPPED) {
-                return;
-            }
-            updateCatalogs();
-        }
-        finally {
-            catalogsUpdateLock.unlock();
-        }
-    }
-
     private void updateCatalogs()
     {
         //Get System Catalog (this will never be pruned)
@@ -593,7 +306,7 @@ public class CustomCatalogManager
         pruneCatalogs(catalogsInUse);
 
         // Add New Catalogs From Catalog Store
-        Collection<CatalogStore.StoredCatalog> storeCatalogs = catalogManagerSpi.getCatalogStore().getCatalogs();
+        Collection<CatalogStore.StoredCatalog> storeCatalogs = catalogStore.getCatalogs();
 
         for (CatalogStore.StoredCatalog catalog : storeCatalogs) {
             addStoredCatalogToManagerState(catalog);
@@ -633,7 +346,6 @@ public class CustomCatalogManager
                 if (existingCatalog.getCatalogHandle().getVersion().equals(properties.catalogHandle().getVersion())) {
                     return;
                 }
-                // Version changed, need to update
                 log.info("-- Updating catalog %s using connector %s from version %s to %s --",
                         storedCatalog.name(), properties.connectorName(),
                         existingCatalog.getCatalogHandle().getVersion(), properties.catalogHandle().getVersion());
@@ -648,7 +360,6 @@ public class CustomCatalogManager
         }
         catch (Exception e) {
             log.error(e, "Failed to add stored catalog %s to manager state", storedCatalog.name());
-            // Don't rethrow - we want to continue processing other catalogs
         }
     }
 }
