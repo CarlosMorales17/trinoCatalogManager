@@ -25,7 +25,7 @@ import java.util.Map;
  * Defines how catalog information is mapped to a backing SQL store for a concrete implementation
  * of {@link JdbcCatalogManagerSpi}.
  */
-public interface SchemaMapping
+public interface JdbcSchemaMapping
 {
     /**
      * SQL required to bring the target database to an operable state. This is executed
@@ -35,30 +35,35 @@ public interface SchemaMapping
 
     /**
      * SQL used to upsert a catalog
-     * @return string SQL statement used to upsert a catalog
+     *
+     * @return tring SQL statement used to upsert a catalog
      */
     String getUpsertCatalogSql();
 
     /**
      * SQL used to delete a catalog
+     *
      * @return string SQL statment used to delete a catalog
      */
     String getDeleteCatalogSql();
 
     /**
      * SQL used to select all catalogs
+     *
      * @return string SQL statement used to select all catalogs
      */
     String getSelectCatalogsSql();
 
     /**
      * The column used to identify a catalog
+     *
      * @return column name
      */
     String getCatalogNameColumn();
 
     /**
      * SQL used to select a catalog by name
+     *
      * @return string SQL statement used to select a catalog
      */
     default String getSelectCatalogByNameSql()
@@ -66,8 +71,8 @@ public interface SchemaMapping
         return getSelectCatalogsSql() + " WHERE " + getCatalogNameColumn() + " = ?";
     }
 
-    /** Convert a {@link ResultSet} row to neutral {@link CatalogData}. */
-    CatalogData extractCatalogData(ResultSet rs)
+    /** Convert a {@link ResultSet} row to neutral {@link JdbcCatalogData}. */
+    JdbcCatalogData extractCatalogData(ResultSet rs)
             throws SQLException;
 
     /** Bind parameters for the upsert statement. */

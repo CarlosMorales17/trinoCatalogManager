@@ -18,16 +18,16 @@ import java.util.Map;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Neutral DTO carrying catalog row data pulled from the backing store.
+ * Neutral Data Structure carrying catalog row data pulled from the backing store.
  */
-public class CatalogData
+public class JdbcCatalogData
 {
     public final String catalogName;
     public final String versionIdentifier;
     public final String connectorName;
     public final Map<String, String> properties;
 
-    public CatalogData(String catalogName, String versionIdentifier, String connectorName, Map<String, String> properties)
+    public JdbcCatalogData(String catalogName, String versionIdentifier, String connectorName, Map<String, String> properties)
     {
         this.catalogName = requireNonNull(catalogName, "catalogName is null");
         this.versionIdentifier = requireNonNull(versionIdentifier, "versionIdentifier is null");

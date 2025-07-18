@@ -37,17 +37,17 @@ import static io.trino.spi.connector.CatalogHandle.createRootCatalogHandle;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Generic JDBC implementation of {@link CatalogStore}. It relies entirely on a {@link SchemaMapping}
+ * Generic JDBC implementation of {@link CatalogStore}. It relies entirely on a {@link JdbcSchemaMapping}
  * provided by the concrete plugin to perform all SQL.
  */
 public class JdbcCatalogStore
         implements CatalogStore
 {
     private final DataSource dataSource;
-    private final SchemaMapping schemaMapping;
+    private final JdbcSchemaMapping schemaMapping;
     private final AtomicLong versionCounter = new AtomicLong(System.currentTimeMillis());
 
-    public JdbcCatalogStore(DataSource dataSource, SchemaMapping schemaMapping)
+    public JdbcCatalogStore(DataSource dataSource, JdbcSchemaMapping schemaMapping)
     {
         this.dataSource = requireNonNull(dataSource, "dataSource is null");
         this.schemaMapping = requireNonNull(schemaMapping, "schemaMapping is null");
@@ -125,9 +125,9 @@ public class JdbcCatalogStore
     private static class JdbcStoredCatalog
             implements StoredCatalog
     {
-        private final CatalogData data;
+        private final JdbcCatalogData data;
 
-        JdbcStoredCatalog(CatalogData data)
+        JdbcStoredCatalog(JdbcCatalogData data)
         {
             this.data = requireNonNull(data, "data is null");
         }

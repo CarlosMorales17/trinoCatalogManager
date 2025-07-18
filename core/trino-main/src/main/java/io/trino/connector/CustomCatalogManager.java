@@ -267,6 +267,28 @@ public class CustomCatalogManager
             return Optional.of(catalog);
         }
 
+        // Fall back to allCatalogs
+        log.debug("Attempting to load catalog '{}' from all catalogs cache", catalogName);
+        List<Map.Entry<CatalogHandle, CatalogConnector>> matchingCatalogs = allCatalogs.entrySet().stream()
+                .filter(entry -> entry.getKey().getCatalogName().equals(catalogName))
+                .collect(toImmutableList());
+
+        if (!matchingCatalogs.isEmpty()) {
+            CatalogConnector catalogConnector;
+            if (matchingCatalogs.size() == 1) {
+                // Single version - use it directly
+                catalogConnector = matchingCatalogs.get(0).getValue();
+                log.debug("Found single version of catalog %s' in allCatalogs", catalogName);
+            }
+            else {
+                // Multiple versions - for now, pick the first one
+                catalogConnector = matchingCatalogs.get(0).getValue();
+                log.debug("Found %s versions of catalog %s in allCatalogs, using first available version",
+                         matchingCatalogs.size(), catalogName);
+            }
+            return Optional.of(catalogConnector.getCatalog());
+        }
+
         //Try to load from Catalog Store
         log.debug("Attempting to load catalog '{}' from catalog store", catalogName);
         CatalogStore.StoredCatalog storedCatalog = catalogManagerSpi.getStoredCatalog(catalogName);
@@ -349,8 +371,16 @@ public class CustomCatalogManager
             // Remove from SPI
             catalogManagerSpi.getCatalogStore().removeCatalog(catalogName);
 
-            // Remove from active catalogs
-            removed = activeCatalogs.remove(catalogName) != null;
+            // Don't Remove from active catalogs, refresh should take care of this
+            //removed = activeCatalogs.remove(catalogName) != null;
+
+            // Validate Existence
+            if (activeCatalogs.containsKey(catalogName)) {
+                removed = true;
+            }
+            else {
+                removed = false;
+            }
         }
         finally {
             catalogsUpdateLock.unlock();

@@ -14,10 +14,10 @@
 package io.trino.plugin.mysqlcatalogmanager;
 
 import io.airlift.log.Logger;
-import io.trino.plugin.base.catalog.CatalogData;
 import io.trino.plugin.base.catalog.JdbcCatalogConfig;
+import io.trino.plugin.base.catalog.JdbcCatalogData;
 import io.trino.plugin.base.catalog.JdbcCatalogManagerSpi;
-import io.trino.plugin.base.catalog.SchemaMapping;
+import io.trino.plugin.base.catalog.JdbcSchemaMapping;
 import io.trino.spi.catalog.CatalogProperties;
 
 import java.sql.PreparedStatement;
@@ -50,9 +50,9 @@ public final class MySQLCatalogManagerPlugin
     }
 
     @Override
-    protected SchemaMapping createSchemaMapping()
+    protected JdbcSchemaMapping createSchemaMapping()
     {
-        return new SchemaMapping()
+        return new JdbcSchemaMapping()
         {
             @Override
             public List<String> getTableCreationStatements()
@@ -80,6 +80,48 @@ public final class MySQLCatalogManagerPlugin
                 );
             }
 
+
+            @Override
+            public String getSelectCatalogsSql()
+            {
+                return "SELECT catalog_name, version_identifier, catalog_config, connector_name FROM catalog_configurations";
+            }
+
+            @Override
+            public String getCatalogNameColumn()
+            {
+                return "catalog_name";
+            }
+
+            @Override
+            public JdbcCatalogData extractCatalogData(ResultSet rs) throws SQLException
+            {
+                String catalogName = rs.getString("catalog_name");
+                String versionIdentifier = rs.getString("version_identifier");
+                String catalogConfig = rs.getString("catalog_config");
+                String connectorName = rs.getString("connector_name");
+
+                Map<String, String> properties = fromJson(catalogConfig);
+                // Remove metadata key if present
+                properties = new HashMap<>(properties);
+                properties.remove("connector.name");
+
+                return new JdbcCatalogData(catalogName, versionIdentifier, connectorName, properties);
+            }
+
+            /*********************************************************************
+             * Methods Below are "Expiremental" tos support addition of new Catalogs Throuhgh Trino
+             /******************************************************************************/
+
+            @Override
+            public void bindCatalogParameters(PreparedStatement stmt, CatalogProperties catalog) throws SQLException
+            {
+                stmt.setString(1, catalog.catalogHandle().getCatalogName().toString());
+                stmt.setString(2, catalog.catalogHandle().getVersion().toString());
+                stmt.setString(3, toJson(catalog.properties()));
+                stmt.setString(4, catalog.connectorName().toString());
+            }
+
             @Override
             public String getUpsertCatalogSql()
             {
@@ -96,43 +138,6 @@ public final class MySQLCatalogManagerPlugin
             public String getDeleteCatalogSql()
             {
                 return "DELETE FROM catalog_configurations WHERE catalog_name = ?";
-            }
-
-            @Override
-            public String getSelectCatalogsSql()
-            {
-                return "SELECT catalog_name, version_identifier, catalog_config, connector_name FROM catalog_configurations";
-            }
-
-            @Override
-            public String getCatalogNameColumn()
-            {
-                return "catalog_name";
-            }
-
-            @Override
-            public CatalogData extractCatalogData(ResultSet rs) throws SQLException
-            {
-                String catalogName = rs.getString("catalog_name");
-                String versionIdentifier = rs.getString("version_identifier");
-                String catalogConfig = rs.getString("catalog_config");
-                String connectorName = rs.getString("connector_name");
-
-                Map<String, String> properties = fromJson(catalogConfig);
-                // Remove metadata key if present
-                properties = new HashMap<>(properties);
-                properties.remove("connector.name");
-
-                return new CatalogData(catalogName, versionIdentifier, connectorName, properties);
-            }
-
-            @Override
-            public void bindCatalogParameters(PreparedStatement stmt, CatalogProperties catalog) throws SQLException
-            {
-                stmt.setString(1, catalog.catalogHandle().getCatalogName().toString());
-                stmt.setString(2, catalog.catalogHandle().getVersion().toString());
-                stmt.setString(3, toJson(catalog.properties()));
-                stmt.setString(4, catalog.connectorName().toString());
             }
         };
     }

@@ -53,7 +53,7 @@ public abstract class JdbcCatalogManagerSpi
     protected final JdbcCatalogStore catalogStore;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final SchemaMapping schemaMapping;
+    private final JdbcSchemaMapping schemaMapping;
 
     protected JdbcCatalogManagerSpi(Map<String, String> properties)
     {
@@ -72,7 +72,7 @@ public abstract class JdbcCatalogManagerSpi
     /**
      * Provide database-specific DDL/DML as well as (de)serialization logic.
      */
-    protected abstract SchemaMapping createSchemaMapping();
+    protected abstract JdbcSchemaMapping createSchemaMapping();
 
     /**
      * Hook for subclasses to customise the connection-pool settings.
