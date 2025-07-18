@@ -70,6 +70,7 @@ public abstract class DynamicCatalogManagerBase
     @GuardedBy("catalogsUpdateLock")
     protected State state = State.CREATED;
     protected final Lock catalogsUpdateLock = new ReentrantLock();
+    protected boolean removeCatalogsInstantly = true;
 
     /**
      * Active catalogs that have been created and not dropped.
@@ -176,11 +177,15 @@ public abstract class DynamicCatalogManagerBase
                                 return null;
                             })
                             .collect(toImmutableList()));
+
+            doLoadInitialCatalogs();
         }
         finally {
             catalogsUpdateLock.unlock();
         }
     }
+
+    protected abstract void doLoadInitialCatalogs();
 
     @Override
     public void ensureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
@@ -327,7 +332,7 @@ public abstract class DynamicCatalogManagerBase
 
             catalogStore.removeCatalog(catalogName);
 
-            if (doHardDropCatalog()) {
+            if (this.removeCatalogsInstantly) {
                 removed = activeCatalogs.remove(catalogName) != null;
             }
             else {
@@ -344,10 +349,5 @@ public abstract class DynamicCatalogManagerBase
         // Do not shut down the catalog, because there may still be running queries using this catalog.
         // Catalog shutdown logic will be added later.
         log.info("Dropped catalog: %s", catalogName);
-    }
-
-    protected boolean doHardDropCatalog()
-    {
-        return true;
     }
 }

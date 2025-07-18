@@ -76,7 +76,7 @@ public class CustomCatalogManager
         super(catalogFactory, executor);
         this.secretsResolver = requireNonNull(secretsResolver, "secretsResolver is null");
         this.catalogManagerKind = requireNonNull(catalogManagerConfig.getCatalogManagerName(), "catalogManagerKind is null");
-
+        this.removeCatalogsInstantly = false;
 
         super.setLogger(log);
     }
@@ -91,27 +91,6 @@ public class CustomCatalogManager
                     super.setCatalogStore(catalogManagerSpi.getCatalogStore());
                 }
             }
-        }
-    }
-
-    @PreDestroy
-    public void stop()
-    {
-        super.stop();
-
-        if (refreshThread != null) {
-            refreshThread.interrupt();
-            refreshThread = null;
-        }
-        catalogManagerSpi.disconnect();
-    }
-
-    public void addCatalogManagerFactory(CatalogManagerFactory catalogManagerFactory)
-    {
-        requireNonNull(catalogManagerFactory, "catalogManagerFactory is null");
-
-        if (catalogManagerFactories.putIfAbsent(catalogManagerFactory.getName(), catalogManagerFactory) != null) {
-            throw new IllegalArgumentException("Catalog manager factory '%s' is already registered".formatted(catalogManagerFactory.getName()));
         }
     }
 
@@ -153,6 +132,27 @@ public class CustomCatalogManager
                 "catalogManager is already set");
         this.catalogManagerSpi = catalogManagerSpi;
         log.info("Plugin catalog manager configured successfully");
+    }
+
+    public void addCatalogManagerFactory(CatalogManagerFactory catalogManagerFactory)
+    {
+        requireNonNull(catalogManagerFactory, "catalogManagerFactory is null");
+
+        if (catalogManagerFactories.putIfAbsent(catalogManagerFactory.getName(), catalogManagerFactory) != null) {
+            throw new IllegalArgumentException("Catalog manager factory '%s' is already registered".formatted(catalogManagerFactory.getName()));
+        }
+    }
+
+    @PreDestroy
+    public void stop()
+    {
+        super.stop();
+
+        if (refreshThread != null) {
+            refreshThread.interrupt();
+            refreshThread = null;
+        }
+        catalogManagerSpi.disconnect();
     }
 
     @Override
@@ -200,6 +200,20 @@ public class CustomCatalogManager
     }
 
     @Override
+    public void loadInitialCatalogs()
+    {
+        ensureCatalogManagerLoaded();
+        super.loadInitialCatalogs();
+    }
+
+    @Override
+    public void ensureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
+    {
+        ensureCatalogManagerLoaded();
+        super.ensureCatalogsLoaded(session, catalogs);
+    }
+
+    @Override
     public void createCatalog(CatalogName catalogName, ConnectorName connectorName, Map<String, String> properties, boolean notExists)
     {
         ensureCatalogManagerLoaded();
@@ -214,22 +228,8 @@ public class CustomCatalogManager
     }
 
     @Override
-    public void loadInitialCatalogs()
-    {
-        ensureCatalogManagerLoaded();
-        super.loadInitialCatalogs();
-        log.info("Initial Active Catalogs: %s", activeCatalogs);
-        log.info("Initial All Catalogs: %s", allCatalogs);
-
-        // Start the catalog synchronization thread
-        synchronizeCatalogsWithCatalogStore();
-    }
-
-    @Override
     public void doEnsureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
     {
-        ensureCatalogManagerLoaded();
-
         List<CatalogProperties> missingCatalogs = catalogs.stream()
                 .filter(catalog -> !allCatalogs.containsKey(catalog.catalogHandle()))
                 .collect(toImmutableList());
@@ -249,14 +249,17 @@ public class CustomCatalogManager
     }
 
     @Override
-    public boolean doHardDropCatalog()
+    public void doLoadInitialCatalogs()
     {
-        return false;
+        log.info("Initial Active Catalogs: %s", activeCatalogs);
+        log.info("Initial All Catalogs: %s", allCatalogs);
+
+        // Start the catalog synchronization thread
+        synchronizeCatalogsWithCatalogStore();
     }
 
     private void synchronizeCatalogsWithCatalogStore()
     {
-        ensureCatalogManagerLoaded();
         long refreshInterval = catalogManagerSpi.getRefreshInterval();
         if (refreshInterval != 0 && refreshThread == null) {
             refreshThread = new Thread(() -> {
