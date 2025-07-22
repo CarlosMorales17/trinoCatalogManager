@@ -18,7 +18,7 @@ import java.util.Map;
 import static java.util.Objects.requireNonNull;
 
 /**
- * Neutral Data Structure carrying catalog row data pulled from the backing store.
+ * Data Structure carrying catalog row data pulled from the backing store.
  */
 public class JdbcCatalogData
 {

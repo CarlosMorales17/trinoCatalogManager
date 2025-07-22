@@ -37,13 +37,6 @@ import static java.util.Objects.requireNonNull;
  * Generic JDBC‐backed implementation of {@link CatalogManagerSpi} that factors out the
  * datasource and catalog-store boilerplate so concrete implementations only need to
  * provide minimal configuration and schema-mapping logic.
- * <p>
- * Subclasses are expected to:
- * <ul>
- *     <li>Provide database connection details via {@link #createConfig(Map)}</li>
- *     <li>Define how the catalog data is mapped to their underlying tables via
- *         {@link #createSchemaMapping()}</li>
- * </ul>
  */
 public abstract class JdbcCatalogManagerSpi
         implements CatalogManagerSpi
@@ -70,7 +63,7 @@ public abstract class JdbcCatalogManagerSpi
     protected abstract JdbcCatalogConfig createConfig(Map<String, String> properties);
 
     /**
-     * Provide database-specific DDL/DML as well as (de)serialization logic.
+     * Provide the schema-mapping logic, which is the key part of the (de)serialization logic.
      */
     protected abstract JdbcSchemaMapping createSchemaMapping();
 
@@ -124,9 +117,7 @@ public abstract class JdbcCatalogManagerSpi
 
     @Override
     public void ensureCatalogsLoaded(List<CatalogProperties> catalogsList)
-    {
-        // default no-op – subclasses may add custom logic/validation.
-    }
+    {}
 
     @Override
     public CatalogStore.StoredCatalog getStoredCatalog(CatalogName catalogName)
@@ -138,7 +129,6 @@ public abstract class JdbcCatalogManagerSpi
     private void initializeDatabase()
             throws SQLException
     {
-        // Execute schema SQL if supplied by mapping implementation
         List<String> ddlStatements = schemaMapping.getTableCreationStatements();
         if (ddlStatements.isEmpty()) {
             return;
