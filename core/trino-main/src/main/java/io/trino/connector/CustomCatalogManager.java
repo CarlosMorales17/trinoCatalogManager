@@ -200,17 +200,30 @@ public class CustomCatalogManager
     }
 
     @Override
+    public void ensureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
+    {
+        ensureCatalogManagerLoaded();
+        List<CatalogProperties> missingCatalogs = catalogs.stream()
+                .filter(catalog -> !allCatalogs.containsKey(catalog.catalogHandle()))
+                .collect(toImmutableList());
+
+        if (!missingCatalogs.isEmpty()) {
+            //We Can try to load the missing catalogs from the catalog store
+            missingCatalogs.forEach(catalog -> {
+                CatalogStore.StoredCatalog storedCatalog = catalogManagerSpi.getStoredCatalog(catalog.catalogHandle().getCatalogName());
+                if (storedCatalog != null) {
+                    addStoredCatalogToManagerState(storedCatalog);
+                }
+            });
+        }
+        super.ensureCatalogsLoaded(session, catalogs);
+    }
+
+    @Override
     public void loadInitialCatalogs()
     {
         ensureCatalogManagerLoaded();
         super.loadInitialCatalogs();
-    }
-
-    @Override
-    public void ensureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
-    {
-        ensureCatalogManagerLoaded();
-        super.ensureCatalogsLoaded(session, catalogs);
     }
 
     @Override
@@ -225,27 +238,6 @@ public class CustomCatalogManager
     {
         ensureCatalogManagerLoaded();
         super.dropCatalog(catalogName, exists);
-    }
-
-    @Override
-    public void doEnsureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
-    {
-        List<CatalogProperties> missingCatalogs = catalogs.stream()
-                .filter(catalog -> !allCatalogs.containsKey(catalog.catalogHandle()))
-                .collect(toImmutableList());
-
-        if (!missingCatalogs.isEmpty()) {
-            //We Can try to load the missing catalogs from the catalog store
-            missingCatalogs.forEach(catalog -> {
-                CatalogStore.StoredCatalog storedCatalog = catalogManagerSpi.getStoredCatalog(catalog.catalogHandle().getCatalogName());
-                if (storedCatalog != null) {
-                    addStoredCatalogToManagerState(storedCatalog);
-                }
-            });
-        }
-
-        // Example of how we can leave extensibilty for the user to extend thier logic, Delegate to SPI for any additional logic
-        catalogManagerSpi.ensureCatalogsLoaded(catalogs);
     }
 
     @Override

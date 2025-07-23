@@ -190,8 +190,6 @@ public abstract class DynamicCatalogManagerBase
     @Override
     public void ensureCatalogsLoaded(Session session, List<CatalogProperties> catalogs)
     {
-        doEnsureCatalogsLoaded(session, catalogs);
-
         List<CatalogProperties> missingCatalogs = catalogs.stream()
                 .filter(catalog -> !allCatalogs.containsKey(catalog.catalogHandle()))
                 .collect(toImmutableList());
@@ -200,8 +198,6 @@ public abstract class DynamicCatalogManagerBase
             throw new TrinoException(CATALOG_NOT_AVAILABLE, "Missing catalogs: " + missingCatalogs);
         }
     }
-
-    protected abstract void doEnsureCatalogsLoaded(Session session, List<CatalogProperties> catalogs);
 
     @Override
     public void pruneCatalogs(Set<CatalogHandle> catalogsInUse)
